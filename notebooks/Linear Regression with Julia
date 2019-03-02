@@ -1,0 +1,567 @@
+{
+ "cells": [
+  {
+   "cell_type": "code",
+   "execution_count": 1,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Name: Ege Ersü\n",
+    "# Student ID: 59741"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "# Linear Regression on Housing Data\n",
+    "In the first lab assignment, you played with Boston Housing Dataset. In this lab assignment, you are going to implement a linear regression model trained on Boston Housing Data by using Knet for the first time. We will take advantage of iterators, callable objects and automatic differentation mechanism."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 2,
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "┌ Info: Recompiling stale cache file /mnt/juliabox/.julia/compiled/v1.0/Plots/ld3vC.ji for Plots [91a5bcdd-55d7-5caf-9e0b-520d859cae80]\n",
+      "└ @ Base loading.jl:1190\n",
+      "┌ Warning: Package Plots does not have REPL in its dependencies:\n",
+      "│ - If you have Plots checked out for development and have\n",
+      "│   added REPL as a dependency but haven't updated your primary\n",
+      "│   environment's manifest file, try `Pkg.resolve()`.\n",
+      "│ - Otherwise you may need to report an issue with Plots\n",
+      "└ Loading REPL into Plots from project dependency, future warnings for Plots are suppressed.\n"
+     ]
+    }
+   ],
+   "source": [
+    "# Necessary imports\n",
+    "using Pkg; for p in (\"Knet\",\"AutoGrad\",\"Plots\",\"Images\",\"ImageMagick\"); haskey(Pkg.installed(),p) || Pkg.add(p); end\n",
+    "using Knet\n",
+    "using Statistics\n",
+    "using Random\n",
+    "import Base: length, size, iterate, eltype, IteratorSize, IteratorEltype, haslength, @propagate_inbounds, repeat, rand, tail\n",
+    "import .Iterators: cycle, Cycle, take, repeat\n",
+    "\n",
+    "using Plots; default(fmt=:png,ls=:auto)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## Data Reading\n",
+    "You do not need to worry about data reading and preprocessing: We are going to take advantage of housing data reader which is also a part of Knet. We include some source file and then use ```housing``` function. ```housing``` function takes one input argument: the percentage of the test set to split dataset into two parts. Just take a look at the cell below. In this lab session, we are going to use 20% of the data as test split."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 310,
+   "metadata": {
+    "scrolled": true
+   },
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "([-0.410443 -0.113706 … -0.328758 -0.415011; -0.48724 -0.48724 … 0.370303 2.94293; … ; 0.37599 -0.068175 … 0.300082 0.440616; 0.185818 -0.00182931 … 0.299246 -0.337914], [26.4 16.1 … 30.7 19.4], [-0.40099 -0.416566 … -0.403706 -0.405478; 0.456057 -0.48724 … -0.48724 1.44223; … ; 0.197557 0.417723 … 0.440616 0.286609; -0.438739 -0.293103 … 0.446283 -1.13331], [24.5 18.5 … 20.3 29.8])"
+      ]
+     },
+     "execution_count": 310,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "include(joinpath(Knet.dir(), \"data\", \"housing.jl\"))\n",
+    "Knet.seed!(1)\n",
+    "xtrn, ytrn, xtst, ytst = housing(0.20; url=\"https://raw.githubusercontent.com/ilkerkesen/ufldl-tutorial/master/ex1/housing.data\")"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 311,
+   "metadata": {
+    "scrolled": false
+   },
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "((13, 405), (1, 405), (13, 101), (1, 101))"
+      ]
+     },
+     "execution_count": 311,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "size(xtrn), size(ytrn), size(xtst), size(ytst)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## Minibatching via Iterators\n",
+    "In this part, you are going implement a minibatching procedure (or let's call it pipeline). Remember, you need to implement your own ```minibatch``` function, it's forbidden to use Knet's ```minibatch``` procedure. Also, your minibatching scheme must use iterators. Just take a look at [this blog post](https://julialang.org/blog/2018/07/iterators-in-julia-0.7). To implement your minibatching pipeline, we provide you ```HousingData``` struct definition. Different from the original implementation, you are not going to discard the last remaining smaller minibatch, you will use all the instances. Also, remember that, ```HousingData``` structure is not mutable which means you are not able to change the values inside struct."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 312,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# DO NOT TOUCH THIS CELL\n",
+    "struct HousingDataMinibatch\n",
+    "    x\n",
+    "    y\n",
+    "    batchsize\n",
+    "    shuffle # shuffle data in each epoch or not\n",
+    "    ninstances # number of instances\n",
+    "end"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 326,
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "HousingDataMinibatch"
+      ]
+     },
+     "execution_count": 326,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "# This function constructs a HousingData object\n",
+    "function HousingDataMinibatch(x, y; batchsize=100, dtype=Array{Float64}, shuffle=false)\n",
+    "    # start your answer\n",
+    "    hd = HousingDataMinibatch(x, y, batchsize, shuffle, size(x)[2])\n",
+    "end"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 325,
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "length (generic function with 151 methods)"
+      ]
+     },
+     "execution_count": 325,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "# Returns how many batches the dataset has (hint: you can use divrem function)\n",
+    "function length(d::HousingDataMinibatch)\n",
+    "    size(d.x)[1]\n",
+    "end"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 324,
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "rand (generic function with 70 methods)"
+      ]
+     },
+     "execution_count": 324,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "# Returns a random minibatch (hint: you can use randperm function)\n",
+    "function rand(d::HousingDataMinibatch)\n",
+    "    # start your answer\n",
+    "    #Shuffles random from 1 to ninstances\n",
+    "    indx = randperm(d.ninstances)[1:d.batchsize]\n",
+    "    x = d.x[:,indx]\n",
+    "    y = d.y[:,indx]\n",
+    "    #x = d.x[:, 1:indx]\n",
+    "    #y = d.y[:, 1:indx]\n",
+    "    # end your answer\n",
+    "    return (x, y)\n",
+    "end"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 316,
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "iterate (generic function with 277 methods)"
+      ]
+     },
+     "execution_count": 316,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "# This is how you implement your own iterator!\n",
+    "#function iterate(d::HousingDataMinibatch, state=ifelse(d.shuffle, randperm(d.ninstances), 1:d.ninstances))\n",
+    "\n",
+    "function iterate(d::HousingDataMinibatch, state=ifelse(d.shuffle, randperm(d.ninstances), 1:d.batchsize))\n",
+    "    \n",
+    "    if state == \"done\"\n",
+    "        return nothing\n",
+    "    end\n",
+    "    \n",
+    "    if d.shuffle == false\n",
+    "\n",
+    "        if state[1] + d.batchsize > d.ninstances\n",
+    "            x_batch = d.x[:,(state[1]:d.ninstances)]\n",
+    "            y_batch = d.y[:,(state[1]:d.ninstances)]\n",
+    "            return (x_batch, y_batch), \"done\"\n",
+    "            return nothing\n",
+    "        end\n",
+    "\n",
+    "        x_batch = d.x[:, state]\n",
+    "        y_batch = d.y[:, state]\n",
+    "\n",
+    "        state = (state[1]+d.batchsize) : (state[1]+ (2*d.batchsize)-1)\n",
+    "\n",
+    "        return (x_batch, y_batch), state\n",
+    "    end\n",
+    "    \n",
+    "    \n",
+    "    if d.shuffle == true\n",
+    "        \n",
+    "        if size(state)[1] < d.batchsize\n",
+    "            x_batch = d.x[:, state[1:size(state)[1]]]\n",
+    "            y_batch = d.y[:, state[1:size(state)[1]]]\n",
+    "            return (x_batch, y_batch), \"done\"\n",
+    "        end\n",
+    "\n",
+    "        x_batch = d.x[:, state[1:d.batchsize]]\n",
+    "        y_batch = d.y[:, state[1:d.batchsize]]\n",
+    "                \n",
+    "        state = state[d.batchsize+1:size(state)[1]]\n",
+    "                return (x_batch, y_batch), state\n",
+    "        \n",
+    "    end\n",
+    "end"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 317,
+   "metadata": {
+    "scrolled": true
+   },
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "HousingDataMinibatch([-0.40099 -0.416566 … -0.403706 -0.405478; 0.456057 -0.48724 … -0.48724 1.44223; … ; 0.197557 0.417723 … 0.440616 0.286609; -0.438739 -0.293103 … 0.446283 -1.13331], [24.5 18.5 … 20.3 29.8], 100, false, 101)"
+      ]
+     },
+     "execution_count": 317,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "dtrn = HousingDataMinibatch(xtrn, ytrn; shuffle=true)\n",
+    "dtst = HousingDataMinibatch(xtst, ytst)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 318,
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "(13, 100), (1, 100)\n",
+      "(13, 100), (1, 100)\n",
+      "(13, 100), (1, 100)\n",
+      "(13, 100), (1, 100)\n",
+      "(13, 5), (1, 5)\n"
+     ]
+    }
+   ],
+   "source": [
+    "# just testing\n",
+    "for (x, y) in dtrn\n",
+    "    println(size(x), \", \", size(y))\n",
+    "end\n",
+    "\n",
+    "# needs to have the following output\n",
+    "# (13, 100), (1, 100)\n",
+    "# (13, 100), (1, 100)\n",
+    "# (13, 100), (1, 100)\n",
+    "# (13, 100), (1, 100)\n",
+    "# (13, 5), (1, 5)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## Model Implementation via Callable Objects\n",
+    "Next, we are going to implement our model via callable objects. In Julia, we can call objects. Just give a glimpse at the following code snippet:"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 319,
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "Hello, World!\n",
+      "Hello, Jupiter!\n"
+     ]
+    }
+   ],
+   "source": [
+    "struct Hello\n",
+    "    planet\n",
+    "    Hello(planet=\"World\") = new(planet)\n",
+    "end\n",
+    "\n",
+    "(obj::Hello)() = println(\"Hello, $(obj.planet)!\")\n",
+    "\n",
+    "hello_world = Hello()\n",
+    "hello_world()\n",
+    "\n",
+    "hello_jupiter = Hello(\"Jupiter\")\n",
+    "hello_jupiter()"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "For this assingment, you just need to define a linear layer and that's all! Write your solutions to the below cell. Hint: You need to use ```Param``` method of AutoGrad. Just type ```@doc Param``` to see the documentation."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 320,
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "Linear1(P(Array{Float64,2}(1,13)), P(Array{Float64,1}(1)))"
+      ]
+     },
+     "execution_count": 320,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "struct Linear1; w; b; end\n",
+    "\n",
+    "Linear1(xsize::Int, ysize::Int, atype=Array{Float64}, scale=0.1)=\n",
+    "    Linear1(Param(scale*randn(1,13)), Param(zeros(1)))\n",
+    "\n",
+    "(l::Linear1)(x) = (l.w * x) .+ l.b\n",
+    "\n",
+    "model = Linear1(1,13)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## Define Loss Function\n",
+    "In this part, we'll define our loss function. We are going to use minimum squared error loss function,\n",
+    "\n",
+    "![MSE](http://web.itu.edu.tr/keseni/mse.png)\n",
+    "\n",
+    "We're going to define three diffent functions for this purpose,\n",
+    "\n",
+    "1. A function takes predictions and gold values as input.\n",
+    "2. A callable object procedure that takes input/output pair as input\n",
+    "3. A callable object procedure that takes our dataset object as input\n",
+    "\n",
+    "See function prototypes below and the documentation of ```train!``` function."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 321,
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "mse(model(xtrn), ytrn) = 295.7437337692845\n",
+      "model(xtrn, ytrn) = 295.7437337692845\n",
+      "model(dtrn) = 275.556436549272\n"
+     ]
+    },
+    {
+     "data": {
+      "text/plain": [
+       "275.556436549272"
+      ]
+     },
+     "execution_count": 321,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "# 1 - takes predictions and gold values as input.\n",
+    "function mse(ypred, ygold)\n",
+    "    N = size(ypred)[2]\n",
+    "    sub = (x->x*x).(ygold - ypred)\n",
+    "    loss = sum(sub)/(2*N)\n",
+    "    loss\n",
+    "end\n",
+    "\n",
+    "\n",
+    "# 2 - callable object procedure that takes input/output pair as input\n",
+    "function (m::Linear1)(x, y)\n",
+    "    mse(m(x), y)\n",
+    "end\n",
+    "\n",
+    "\n",
+    "# 3 - callable object procedure that takes our dataset object as input\n",
+    "function (m::Linear1)(data::HousingDataMinibatch)\n",
+    "    mean(m(x,y) for (x,y) in data)\n",
+    "end\n",
+    "\n",
+    "model = Linear1(1,13)\n",
+    "\n",
+    "@show mse(model(xtrn), ytrn)\n",
+    "@show model(xtrn,ytrn)\n",
+    "@show model(dtrn)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## Training with Modular Interface and Iterators\n",
+    "Now, let's implement a ```mytrain!``` procedure to train our network! It takes model, train data, test data, report period (in iterations) and number of maximum iterations. It trains our model until a certain maximum iterations number, records loss values of train and test data splits after each report period. It should output three lists: iterations numbers, loss values of train set, loss values of test set.\n",
+    "\n",
+    "Hint: You will need ```sgd!```, ```cycle``` and ```take``` procedures."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 341,
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "mytrain! (generic function with 3 methods)"
+      ]
+     },
+     "execution_count": 341,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "function pusher(m::Linear1,dtrn,dtst,trnloss,tstloss)\n",
+    "    push!(trnloss, m(dtrn))\n",
+    "    push!(tstloss, m(dtst))\n",
+    "end\n",
+    "    \n",
+    "function mytrain!(m::Linear1, dtrn, dtst, valid=10, max_iters=500)\n",
+    "    trnloss = []\n",
+    "    tstloss = []\n",
+    "    \n",
+    "    takeevery(n,itr) = (x for (i,x) in enumerate(itr) if i % n == 1)                           \n",
+    "    \n",
+    "    a = sgd(m, take(cycle(dtrn), max_iters+1))\n",
+    "    b = (pusher(m,dtrn,dtst,trnloss,tstloss) for x in takeevery(valid, a))\n",
+    "     \n",
+    "    progress!(b)    \n",
+    "                \n",
+    "    return 0:valid:max_iters, trnloss, tstloss\n",
+    "end"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "Finally, let's train our network and plot the results,"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 342,
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "┣  /       /       /       /       /       /       /      ┫ 51 [00:00, 479.15i/s]\n"
+     ]
+    },
+    {
+     "data": {
+      "image/png": "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QS/FWr58+QcffPDkk0+2aUcvtTFy5Mhly5aNHDkyOzv7qaee+vDDD432RHZUygahcRULImrvKhZA7fSSlbuOc/7rX/961qxZ8+fPf+qppySpZTFedFSs/fv333///UTkcrmmT59eUVFhtKOXYn366acrVqyw2WzGhpsxtmrVKkIvnWDDhg2rV682bttsttb1+RLZUSkbhLiKRWfE7SUrd93q1asXLly4ZMmSwsLC2Iuto6NiFRYWvvTSSytWrOCcv/nmm6NGjTLa0UuxHnvssdY9b0TEOTeu6oxeaiMQCHz3u9+tqKiIRqOPPvrotddea7QntKO6ax9rsvF6vVdddVVRUVFZWVljY6PZ5SSLNr/xuL1k5a577LHH4r5B0FFtfPbZZ6NHj87Kyjr//PONkxc4eql9se879FIbuq4///zzAwcOzM3NnTZtms/nM9oT2VFYdBsAACwtZXeNAgAAdAaCEAAALA1BCAAAloYgBAAAS0MQAgCApSEIAQDA0hCEAABgaQhCAACwNAQhAABYGoIQAAAsDUEIAACWhiAE6FmMsR07dqTSCwGkGAQhQOK89957rZd2Ss4nBLAgXH0CoGf5/X6n0ykIAhExxioqKkpKSrrryWOfMPaFAKDzJLMLAEhxbrc7xV4IIMXgwyNAz2o9dMcYI6KhQ4caNzjnL7744tChQ51O56hRo1599dXW3TOMsXXr1pWVlY0bN46Itm3bdu211xYVFTkcjuHDh8+fP7/1YbFPGHuMUNf1p59+etiwYW63e8yYMW+//XZsPevWrbvuuuuys7MHDBjw5ptvtt61ZcuWK6+8Mjs7OyMj47LLLsMRR7AIBCFAgtTU1BDRypUrjRt///vfn3322V//+tfvvPPOFVdcMX369L/85S+tD77jjjsKCgruueeeSCQyadKkXbt2/fa3v33zzTfHjx9/8803+3y+E58w1h/+8IeHH374tttuW7BgwWWXXXb99de/9957rffeddddkydPXrp06YQJE6ZNmxYIBIhI07TLL788JyfnxRdf/Otf/2qz2aZNm9bzvQKQBLrrUvcAEBcRVVRUnHh79OjRu3fvbn3YL37xi/Hjx7c+7P777zdue73eRx55ZP369caXjY2N7T1h621d13NycowhpuFXv/rVhAkTWh/2xz/+0bjd1NTU+l1VVVVEtH37duOuurq61157rfu6ASB54RghgDkqKyvPPPPM2JaCgoLW22VlZcaNzMzMRx55ZPXq1S+88MLmzZuXL19+0meuq6urr6+/5pprWluuuuqquXPntn45YcIE44bH42ltLCwsvP32288999zJkydfeOGFN9xwwy233NKlnwzgNINdowDmcDqdGzZsqIjx2Weftd6bl5fXevuWW26ZPn364cOHv//9769ataoLryUIgqZprV+6XK64jykvL9+9e/ell166bt260tLSBx54oAuvBXDaQRACmGPYsGHV1dUlJSUlJSVDhgx59tlnX3311RMfVldX9/rrr69YsWLWrFmXXnop78R8p7y8vJycnH/961+tLUuXLh0+fHjH3+X1en/84x9nZ2fPmDFjwYIFCxYs+POf//xtfyiA0xF2jQIkjiiKH374YTAYHD169L333nvjjTfOmjWrX79+CxcufO211959990Tv8XtdjudzkcfffSGG26oqqqaM2eOKIpr164dMGCAzWaLfcLWb2GM/fKXv7zjjjtqa2tLS0tXrlz5u9/9btGiRR3Xlp6evmTJkkAgcN1114XD4fLy8jFjxnTzzw+QnMw+SAmQ4ijmfJb77rvP5XJlZWUZX7700kslJSVOp3PMmDH//Oc/434L53zhwoUDBw50u92TJk3asGHDz372M7fbvW/fvjZPGPtdmqb94Q9/MOZmjBw58u23327vyWO//OKLLy644ALjCb/73e8ePHiwB/oDIOlgZRkAALA0HCMEAABL+/8Z0Hd6mqbHOwAAAABJRU5ErkJggg=="
+     },
+     "execution_count": 342,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "Knet.seed!(42)\n",
+    "model = Linear1(13, 1)\n",
+    "dtrn = HousingDataMinibatch(xtrn, ytrn; shuffle=true)\n",
+    "dtst = HousingDataMinibatch(xtst, ytst)\n",
+    "iters, trnloss, tstloss = mytrain!(model, dtrn, dtst)\n",
+    "plot(iters, [trnloss, tstloss], labels=[:trn, :tst], xlabel=\"iterations\", ylabel=\"loss\")"
+   ]
+  }
+ ],
+ "metadata": {
+  "kernelspec": {
+   "display_name": "Julia 1.0.3 (4 threads)",
+   "language": "julia",
+   "name": "julia-1.0k"
+  },
+  "language_info": {
+   "file_extension": ".jl",
+   "mimetype": "application/julia",
+   "name": "julia",
+   "version": "1.0.3"
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 2
+}
